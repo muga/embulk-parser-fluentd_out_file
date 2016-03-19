@@ -1,6 +1,5 @@
 package org.embulk.parser.fluentd_out_file;
 
-import com.google.common.base.Optional;
 import org.embulk.config.Config;
 import org.embulk.config.ConfigDefault;
 import org.embulk.config.ConfigSource;
@@ -13,12 +12,13 @@ import org.embulk.spi.ParserPlugin;
 import org.embulk.spi.FileInput;
 import org.embulk.spi.PageOutput;
 import org.embulk.spi.Schema;
+import org.embulk.spi.SchemaConfig;
 import org.embulk.spi.json.JsonParser;
 import org.embulk.spi.time.Timestamp;
 import org.embulk.spi.time.TimestampParser;
 import org.embulk.spi.type.Types;
 import org.embulk.spi.util.LineDecoder;
-import org.joda.time.DateTimeZone;
+import org.embulk.spi.util.Timestamps;
 import org.msgpack.value.Value;
 
 public class FluentdOutFileParserPlugin
@@ -27,47 +27,30 @@ public class FluentdOutFileParserPlugin
     // @see http://docs.fluentd.org/articles/out_file#format
 
     public interface PluginTask
-            extends Task, LineDecoder.DecoderTask, TimestampParser.Task, TimestampParser.TimestampColumnOption
+            extends Task, LineDecoder.DecoderTask, TimestampParser.Task
     {
         @Config("delimiter")
         @ConfigDefault("\"\\t\"")
-        char getDelimiterChar(); // TODO guess?
+        char getDelimiterChar();
 
-        @Config("default_timestamp_format")
-        @ConfigDefault("\"%Y-%m-%dT%H:%M:%S%Z\"") // iso8601
-        String getDefaultTimestampFormat(); // TODO guess?
-
-        @Config("default_timezone")
-        @ConfigDefault("\"UTC\"")
-        DateTimeZone getDefaultTimeZone();
-
-        @Config("output_time")
-        @ConfigDefault("true")
-        boolean getOutputTime(); // TODO guess?
-
-        @Config("output_tag")
-        @ConfigDefault("true")
-        boolean getOutputTag(); // TODO guess?
+        @Config("columns")
+        SchemaConfig getSchemaConfig();
     }
 
     @Override
     public void transaction(ConfigSource config, ParserPlugin.Control control)
     {
         PluginTask task = config.loadConfig(PluginTask.class);
-        control.run(task.dump(), newSchema(task));
+
+        Schema schema = task.getSchemaConfig().toSchema();
+        validateSchema(schema);
+
+        control.run(task.dump(), schema);
     }
 
-    private Schema newSchema(PluginTask task)
+    private void validateSchema(Schema schema)
     {
-        Schema.Builder schema = Schema.builder();
-        if (task.getOutputTime()) {
-            schema.add("time", Types.TIMESTAMP);
-        }
-        if (task.getOutputTag()) {
-            schema.add("tag", Types.STRING);
-        }
-        schema.add("record", Types.JSON);
-        return schema.build();
+        // TODO
     }
 
     @Override
@@ -75,15 +58,14 @@ public class FluentdOutFileParserPlugin
             FileInput input, PageOutput output)
     {
         PluginTask task = taskSource.loadTask(PluginTask.class);
-        final Optional<Integer> timeIndex = task.getOutputTime() ? Optional.of(0) : Optional.<Integer>absent();
-        final Optional<Integer> tagIndex = task.getOutputTag() ? (timeIndex.isPresent() ? Optional.of(1) : Optional.of(0)) : Optional.<Integer>absent();
-        final int recordIndex = tagIndex.isPresent() ? tagIndex.get() + 1 : 0;
-        final Optional<TimestampParser> timestampParser = timeIndex.isPresent() ? Optional.of(new TimestampParser(task, task)) : Optional.<TimestampParser>absent();
+
+        final TimestampParser[] timestampParsers = Timestamps.newTimestampColumnParsers(task, task.getSchemaConfig());
         final JsonParser jsonParser = new JsonParser();
 
         long lineNumber;
         int linePos;
         String line;
+        int columnIndex;
 
         try (final PageBuilder pageBuilder = newPageBuilder(schema, output);
                 final LineDecoder decoder = new LineDecoder(input, task)) {
@@ -93,31 +75,35 @@ public class FluentdOutFileParserPlugin
                 while ((line = decoder.poll()) != null) {
                     lineNumber++;
                     linePos = 0;
+                    columnIndex = 0;
 
                     // parse time
-                    if (timeIndex.isPresent()) {
-                        int i = line.indexOf(task.getDelimiterChar(), linePos);
-                        String value = line.substring(linePos, i);
-                        linePos = i + 1;
+                    if (schema.getColumn(columnIndex).getType().equals(Types.TIMESTAMP)) {
+                        Column column = schema.getColumn(columnIndex);
 
-                        Column column = schema.getColumn(timeIndex.get());
-                        Timestamp timestamp = timestampParser.get().parse(value);
+                        int i = line.indexOf(task.getDelimiterChar(), linePos);
+                        Timestamp timestamp = timestampParsers[column.getIndex()].parse(line.substring(linePos, i)); // TODO error handling
                         pageBuilder.setTimestamp(column, timestamp);
+
+                        linePos = i + 1;
+                        columnIndex += 1;
                     }
 
                     // parse tag
-                    if (tagIndex.isPresent()) {
-                        int i = line.indexOf(task.getDelimiterChar(), linePos);
-                        String value = line.substring(linePos, i);
-                        linePos = i + 1;
+                    if (schema.getColumn(columnIndex).getType().equals(Types.STRING)) {
+                        Column column = schema.getColumn(columnIndex);
 
-                        Column column = schema.getColumn(tagIndex.get());
-                        pageBuilder.setString(column, value);
+                        int i = line.indexOf(task.getDelimiterChar(), linePos);
+                        pageBuilder.setString(column, line.substring(linePos, i));
+
+                        linePos = i + 1;
+                        columnIndex += 1;
                     }
 
                     // parse record
-                    Column column = schema.getColumn(recordIndex);
-                    Value value = jsonParser.parse(line.substring(linePos));
+                    Column column = schema.getColumn(columnIndex);
+                    Value value = jsonParser.parse(line.substring(linePos)); // TODO error handling
+
                     pageBuilder.setJson(column, value);
 
                     pageBuilder.addRecord();

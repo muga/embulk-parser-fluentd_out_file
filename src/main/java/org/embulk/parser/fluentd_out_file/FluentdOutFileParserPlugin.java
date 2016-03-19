@@ -13,6 +13,7 @@ import org.embulk.spi.FileInput;
 import org.embulk.spi.PageOutput;
 import org.embulk.spi.Schema;
 import org.embulk.spi.SchemaConfig;
+import org.embulk.spi.SchemaConfigException;
 import org.embulk.spi.json.JsonParser;
 import org.embulk.spi.time.Timestamp;
 import org.embulk.spi.time.TimestampParser;
@@ -50,7 +51,17 @@ public class FluentdOutFileParserPlugin
 
     private void validateSchema(Schema schema)
     {
-        // TODO
+        if (schema.getColumnCount() > 3) {
+            throw new SchemaConfigException("The size of columns must not be greater than 3: " + schema.getColumnCount());
+        }
+
+        for (Column column : schema.getColumns()) {
+            if (!column.getType().equals(Types.TIMESTAMP) &&
+                    !column.getType().equals(Types.STRING) &&
+                    !column.getType().equals(Types.JSON)) {
+                throw new SchemaConfigException("columns must not include 'long' and 'double' types.");
+            }
+        }
     }
 
     @Override

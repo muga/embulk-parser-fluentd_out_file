@@ -6,7 +6,7 @@ module Embulk
       Plugin.register_guess("fluentd_out_file", self)
 
       DELIMITER_CANDIDATES = [
-        "\t", " ", ",", "|"
+        "\t", ",", "|"
       ]
 
       def guess_lines(config, sample_lines)
@@ -43,8 +43,8 @@ module Embulk
           elsif type == "json"
             schema << {"name" => "record", "type" => type}
           else
-            # TODO warning
-            schema << {"name" => "tag", "type" => type}
+            # not fluentd_out_file file
+            return {}
           end
         end
         parser_guessed["columns"] = schema
@@ -52,7 +52,7 @@ module Embulk
         return {"parser" => parser_guessed}
       end
 
-      private # ported from csv_guess.rb
+      private # ported from csv_guess.rb temporarily
 
       def guess_delimiter(sample_lines)
         delim_weights = DELIMITER_CANDIDATES.map do |d|

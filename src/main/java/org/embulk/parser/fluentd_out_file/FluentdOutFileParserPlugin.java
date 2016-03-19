@@ -6,6 +6,7 @@ import org.embulk.config.ConfigSource;
 import org.embulk.config.Task;
 import org.embulk.config.TaskSource;
 import org.embulk.spi.Column;
+import org.embulk.spi.DataException;
 import org.embulk.spi.Exec;
 import org.embulk.spi.PageBuilder;
 import org.embulk.spi.ParserPlugin;
@@ -14,13 +15,16 @@ import org.embulk.spi.PageOutput;
 import org.embulk.spi.Schema;
 import org.embulk.spi.SchemaConfig;
 import org.embulk.spi.SchemaConfigException;
+import org.embulk.spi.json.JsonParseException;
 import org.embulk.spi.json.JsonParser;
 import org.embulk.spi.time.Timestamp;
+import org.embulk.spi.time.TimestampParseException;
 import org.embulk.spi.time.TimestampParser;
 import org.embulk.spi.type.Types;
 import org.embulk.spi.util.LineDecoder;
 import org.embulk.spi.util.Timestamps;
 import org.msgpack.value.Value;
+import org.slf4j.Logger;
 
 public class FluentdOutFileParserPlugin
         implements ParserPlugin
@@ -36,6 +40,13 @@ public class FluentdOutFileParserPlugin
 
         @Config("columns")
         SchemaConfig getSchemaConfig();
+    }
+
+    private final Logger log;
+
+    public FluentdOutFileParserPlugin()
+    {
+        log = Exec.getLogger(FluentdOutFileParserPlugin.class);
     }
 
     @Override
@@ -69,6 +80,7 @@ public class FluentdOutFileParserPlugin
             FileInput input, PageOutput output)
     {
         PluginTask task = taskSource.loadTask(PluginTask.class);
+        final char delimiter = task.getDelimiterChar();
 
         final TimestampParser[] timestampParsers = Timestamps.newTimestampColumnParsers(task, task.getSchemaConfig());
         final JsonParser jsonParser = new JsonParser();
@@ -88,38 +100,43 @@ public class FluentdOutFileParserPlugin
                     linePos = 0;
                     columnIndex = 0;
 
-                    // parse time
-                    if (schema.getColumn(columnIndex).getType().equals(Types.TIMESTAMP)) {
+                    try {
+                        // parse time
+                        if (isTimestampType(schema.getColumn(columnIndex))) {
+                            Column column = schema.getColumn(columnIndex);
+
+                            int i = indexOf(delimiter, linePos, line);
+                            Timestamp timestamp = timestampParsers[column.getIndex()].parse(line.substring(linePos, i));
+                            pageBuilder.setTimestamp(column, timestamp);
+
+                            linePos = i + 1;
+                            columnIndex += 1;
+                        }
+
+                        // parse tag
+                        if (isStringType(schema.getColumn(columnIndex))) {
+                            Column column = schema.getColumn(columnIndex);
+
+                            int i = indexOf(delimiter, linePos, line);
+                            pageBuilder.setString(column, line.substring(linePos, i));
+
+                            linePos = i + 1;
+                            columnIndex += 1;
+                        }
+
+                        // parse record
                         Column column = schema.getColumn(columnIndex);
+                        Value value = jsonParser.parse(line.substring(linePos));
 
-                        int i = line.indexOf(task.getDelimiterChar(), linePos);
-                        Timestamp timestamp = timestampParsers[column.getIndex()].parse(line.substring(linePos, i)); // TODO error handling
-                        pageBuilder.setTimestamp(column, timestamp);
+                        pageBuilder.setJson(column, value);
 
-                        linePos = i + 1;
-                        columnIndex += 1;
+                        pageBuilder.addRecord();
                     }
-
-                    // parse tag
-                    if (schema.getColumn(columnIndex).getType().equals(Types.STRING)) {
-                        Column column = schema.getColumn(columnIndex);
-
-                        int i = line.indexOf(task.getDelimiterChar(), linePos);
-                        pageBuilder.setString(column, line.substring(linePos, i));
-
-                        linePos = i + 1;
-                        columnIndex += 1;
+                    catch (FluentdOutFileRecordValidateException | StringIndexOutOfBoundsException |
+                            TimestampParseException | JsonParseException e) {
+                        log.warn(String.format("Skipped record %d (%s): %s", lineNumber, e.getMessage(), line));
                     }
-
-                    // parse record
-                    Column column = schema.getColumn(columnIndex);
-                    Value value = jsonParser.parse(line.substring(linePos)); // TODO error handling
-
-                    pageBuilder.setJson(column, value);
-
-                    pageBuilder.addRecord();
                 }
-                // TODO error handling
             }
 
             pageBuilder.finish();
@@ -129,5 +146,38 @@ public class FluentdOutFileParserPlugin
     private PageBuilder newPageBuilder(Schema schema, PageOutput output)
     {
         return new PageBuilder(Exec.getBufferAllocator(), schema, output);
+    }
+
+    private static boolean isTimestampType(Column column)
+    {
+        return column.getType().equals(Types.TIMESTAMP);
+    }
+
+    private static boolean isStringType(Column column)
+    {
+        return column.getType().equals(Types.STRING);
+    }
+
+    private static int indexOf(char c, int fromPos, String inLine)
+    {
+        int i = inLine.indexOf(c, fromPos);
+        if (i < 0) {
+            throw new FluentdOutFileRecordValidateException("Too few columns");
+        }
+        return i;
+    }
+
+    static class FluentdOutFileRecordValidateException
+            extends DataException
+    {
+        FluentdOutFileRecordValidateException(Throwable cause)
+        {
+            super(cause);
+        }
+
+        FluentdOutFileRecordValidateException(String message)
+        {
+            super(message);
+        }
     }
 }

@@ -170,11 +170,6 @@ public class FluentdOutFileParserPlugin
     static class FluentdOutFileRecordValidateException
             extends DataException
     {
-        FluentdOutFileRecordValidateException(Throwable cause)
-        {
-            super(cause);
-        }
-
         FluentdOutFileRecordValidateException(String message)
         {
             super(message);

@@ -1,15 +1,17 @@
 # Fluentd Out File parser plugin for Embulk
 
-TODO: Write short description here and build.gradle file.
+This plugin parses fluentd's out_file formatted files.
+http://docs.fluentd.org/articles/out_file
 
 ## Overview
 
 * **Plugin type**: parser
-* **Guess supported**: no
+* **Guess supported**: yes
 
 ## Configuration
 
-- **delimiter**: description (integer, required)
+- **delimiter**: Delimiter character such as \t (string, required)
+- **columns**: Columns (hash, required)
 
 ## Example
 
@@ -18,8 +20,11 @@ in:
   type: any file input plugin type
   parser:
     type: fluentd_out_file
-    option1: example1
-    option2: example2
+    delimiter: "\t"
+    columns:
+    - {name: time, type: timestamp, format: '%Y-%m-%dT%H:%M:%S%:z'}
+    - {name: tag, type: string}
+    - {name: record, type: json}
 ```
 
 (If guess supported) you don't have to write `parser:` section in the configuration file. After writing `in:` section, you can let embulk guess `parser:` section using this command:
@@ -33,4 +38,10 @@ $ embulk guess -g fluentd_out_file config.yml -o guessed.yml
 
 ```
 $ ./gradlew gem  # -t to watch change of files and rebuild continuously
+```
+
+## Test
+
+```
+$ ./gradlew clean test jacocoTestReport
 ```

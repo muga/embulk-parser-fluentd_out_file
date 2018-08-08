@@ -113,17 +113,6 @@ public class FluentdOutFileParserPlugin
                             columnIndex += 1;
                         }
 
-                        // parse tag
-                        if (isStringType(schema.getColumn(columnIndex))) {
-                            Column column = schema.getColumn(columnIndex);
-
-                            int i = indexOf(delimiter, linePos, line);
-                            pageBuilder.setString(column, line.substring(linePos, i));
-
-                            linePos = i + 1;
-                            columnIndex += 1;
-                        }
-
                         // parse record
                         Column column = schema.getColumn(columnIndex);
                         Value value = jsonParser.parse(line.substring(linePos));
